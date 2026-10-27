@@ -331,14 +331,11 @@
   z-index: 2;
 }
 
-.ams-stick, .ams-fire {
+.ams-stick {
   position: absolute;
   bottom: 18px;
   border-radius: 50%;
   touch-action: none;
-}
-
-.ams-stick {
   left: 18px;
   width: 132px;
   height: 132px;
@@ -357,19 +354,42 @@
   background: rgba(255, 255, 255, 0.28);
 }
 
-.ams-fire {
+.ams-fires {
+  --fire: 86px;
+  position: absolute;
   right: 24px;
-  width: 86px;
-  height: 86px;
+  bottom: 18px;
+  max-width: calc(var(--fire) * 2 + 14px);
+  display: flex;
+  flex-direction: row-reverse;
+  flex-wrap: wrap-reverse;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.ams-touch-manyfires .ams-fires { --fire: 70px; }
+
+.ams-fire {
+  flex: none;
+  width: var(--fire);
+  height: var(--fire);
+  border-radius: 50%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0 6px;
+  text-align: center;
+  overflow-wrap: anywhere;
   background: rgba(210, 59, 47, 0.45);
   border: 2px solid rgba(255, 255, 255, 0.25);
   font-weight: 700;
   letter-spacing: 0.05em;
 }
 
+.ams-fire:nth-child(even) { margin-bottom: 36px; }
 .ams-fire.on { background: rgba(210, 59, 47, 0.85); }
 
 .ams-touch-keys {
@@ -395,9 +415,41 @@
   touch-action: none;
 }
 
+.ams-touch-edit .ams-stick, .ams-touch-edit .ams-fire {
+  outline: 2px dashed var(--v-accent);
+  outline-offset: 3px;
+  cursor: move;
+}
+
+.ams-touch-editbar {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  font-size: 13px;
+}
+
+.ams-touch-editbar[hidden] { display: none; }
+
+.ams-touch-nostick .ams-touch-keys { left: 24px; }
+.ams-touch-nofire .ams-touch-keys { right: 24px; }
+.ams-touch-fires .ams-touch-keys { right: 230px; }
+
 .ams-notoolbar .ams-panel, .ams-notoolbar .ams-touch { bottom: 0; }
 
 @media (max-width: 520px) {
   .ams-title { display: none; }
-  .ams-touch-keys { left: 12px; right: 12px; bottom: 160px; }
+  .ams-touch .ams-touch-keys { left: 12px; right: 12px; bottom: 160px; }
+  .ams-touch-manyfires .ams-touch-keys { bottom: 260px; }
 }
