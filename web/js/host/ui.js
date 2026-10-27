@@ -1,0 +1,575 @@
+import { PALETTE_NAMES } from './palettes.js';
+
+const PALETTE_LABELS = { ctm644: 'CTM644 colour monitor', cpc: 'Ideal levels', gt65: 'GT65 green screen', grey: 'Grey' };
+import { FILTER_RANGES, MASK_SHAPES } from './crtfilter.js';
+import { JOY, MODELS } from '../emu/cpc.js';
+import { CPC_KEYS } from '../emu/keys.js';
+import { keyLabel } from './input.js';
+import { SLOT_COUNT } from './savestates.js';
+
+const ICONS = {
+  reset: '<path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/>',
+  joystick: '<path d="M11 2h2v8.1a3 3 0 1 1-2 0zM5 15h14l2 5H3z"/>',
+  warp: '<path d="M3 6l8 6-8 6zm9 0l8 6-8 6z"/>',
+  crt: '<path d="M3 5h18v12H3zm2 2v8h14V7zM8 19h8v2H8z"/>',
+  sound: '<path d="M4 9h4l5-4v14l-5-4H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/>',
+  mute: '<path d="M4 9h4l5-4v14l-5-4H4zm12.6.4L18 8l2 2 2-2 1.4 1.4-2 2 2 2L22 15l-2-2-2 2-1.4-1.6 2-2z"/>',
+  settings: '<path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.4-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.4L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.4 2.5-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>',
+  unload: '<path d="M12 4l8 10H4zM4 16h16v3H4z"/>',
+  load: '<path d="M3 5h7l2 2h9v12H3zm9 4l-4 4h3v4h2v-4h3z"/>',
+  fullscreen: '<path d="M4 4h6v2H6v4H4zm10 0h6v6h-2V6h-4zM4 14h2v4h4v2H4zm14 0h2v6h-6v-2h4z"/>',
+  pause: '<path d="M6 4h4v16H6zm8 0h4v16h-4z"/>',
+  play: '<path d="M7 4l13 8-13 8z"/>',
+  states: '<path fill-rule="evenodd" d="M3 3h14l4 4v14H3zm3 2v5h10V5zm6 8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>',
+};
+
+function icon(name) {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+
+function el(tag, attrs = {}, html = '') {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  if (html) e.innerHTML = html;
+  return e;
+}
+
+const RAM_LABELS = [['auto', 'Model default'], ['64', '64K'], ['128', '128K'], ['256', '256K'], ['576', '576K']];
+
+const TOUCH_KEY_LABELS = {
+  RETURN: 'RETURN', ENTER: 'ENTER', SPACE: 'SPACE', ESC: 'ESC', COPY: 'COPY', CLR: 'CLR', DEL: 'DEL',
+  CURUP: '▲', CURDOWN: '▼', CURLEFT: '◀', CURRIGHT: '▶', SHIFT: 'SHIFT', CONTROL: 'CTRL', CTRL: 'CTRL',
+  CAPSLOCK: 'CAPS', TAB: 'TAB', 'F.': 'f.',
+};
+
+export function touchKey(spec) {
+  const s = typeof spec === 'string' ? { key: spec } : spec || {};
+  const keys = [].concat(s.keys || s.key || []).map((k) => String(k).toUpperCase());
+  const name = keys.length === 1 ? keys[0] : null;
+  const bad = keys.filter((k) => CPC_KEYS[k] === undefined);
+  if (!keys.length || bad.length) {
+    console.warn(`ui.touchKeys: unknown CPC key ${bad.join(', ') || JSON.stringify(spec)}`);
+    return null;
+  }
+  const fkey = name && /^F\d$/.test(name) ? 'f' + name.slice(1) : null;
+  return { keys, label: s.label || TOUCH_KEY_LABELS[name] || fkey || name || keys.join('+') };
+}
+
+export function createUi(app, container) {
+  const o = app.opts.ui;
+  container.classList.add('ams');
+  container.innerHTML = '';
+
+  const screen = el('div', { class: 'ams-screen' });
+  const canvas = el('canvas', { class: 'ams-canvas', tabindex: '0', 'aria-label': 'CPC screen' });
+  screen.append(canvas);
+
+  const status = el('div', { class: 'ams-status' });
+  const led = el('span', { class: 'ams-led', title: 'Disk drive' });
+  const tape = el('span', { class: 'ams-tag ams-tape', title: 'Tape' }, 'TAPE');
+  const warp = el('span', { class: 'ams-tag ams-warp' }, 'WARP');
+  const joyTag = el('span', { class: 'ams-tag ams-joytag', title: 'Keyboard joystick (F9)' }, 'JOY');
+  status.append(joyTag, warp, tape, led);
+  screen.append(status);
+
+  const toast = el('div', { class: 'ams-toast', role: 'status' });
+  screen.append(toast);
+
+  const start = el('div', { class: 'ams-start' },
+    `<div class="ams-start-box"><div class="ams-start-title"></div>
+     <button class="ams-start-btn" type="button">${icon('play')}<span>Click to start</span></button>
+     <div class="ams-start-hint"></div></div>`);
+  start.querySelector('.ams-start-title').textContent = o.title || 'Amstrad CPC';
+  start.hidden = true;
+  screen.append(start);
+
+  const drop = el('div', { class: 'ams-drop' }, '<div>Drop a CPC file (DSK, CDT, SNA, CPR, BIN, ZIP)<br><small>Hold Shift to attach it without running</small></div>');
+  drop.hidden = true;
+  screen.append(drop);
+
+  container.append(screen);
+
+  const fileInput = el('input', { type: 'file', accept: '.dsk,.cdt,.tzx,.csw,.voc,.wav,.sna,.cpr,.bin,.zip', hidden: '' });
+  const btn = (name, title, onclick) => {
+    const b = el('button', { class: 'ams-btn', type: 'button', title, 'aria-label': title, onclick }, icon(name));
+    return b;
+  };
+  const toolbar = el('div', { class: 'ams-toolbar' });
+  const bReset = btn('reset', 'Reset', () => app.reset());
+  const bPause = btn('pause', 'Pause', () => app.pause(!app.paused));
+  const bJoy = btn('joystick', 'Keyboard joystick (F9)', () => app.setJoystickKeys(!app.input.joyKeysEnabled));
+  const bWarp = btn('warp', 'Warp speed (F10)', () => app.setWarp(!app.warp));
+  const bCrt = btn('crt', 'CRT effects', () => {
+    const on = !(app.renderer.crt.enabled || app.renderer.filter.enabled);
+    app.setVideo({ crt: { enabled: on }, filter: { enabled: on } });
+  });
+  const bMute = btn('sound', 'Sound', () => { app.start(); app.setMuted(!app.audio.muted); });
+  let loadAndRun = true;
+  const pickFile = (e) => { loadAndRun = !(e && e.shiftKey); fileInput.click(); };
+  const bLoad = btn('load', 'Load file (Shift+click: attach without running)', pickFile);
+  const bUnload = btn('unload', 'Unload (start in BASIC)', () => app.unload());
+  const bStates = btn('states', 'Save and load', () => toggleStates());
+  const bSettings = btn('settings', 'Settings', () => toggleSettings());
+  const bFull = btn('fullscreen', 'Fullscreen (F11)', () => toggleFullscreen());
+  const left = el('div', { class: 'ams-toolbar-group' });
+  const right = el('div', { class: 'ams-toolbar-group' });
+  const full = !o.minimal;
+  const canLoad = full && o.allowFileDrop;
+  if (full) left.append(bReset);
+  left.append(bPause, bJoy);
+  if (full) left.append(bWarp);
+  if (o.saveStates) right.append(bStates);
+  right.append(bCrt);
+  right.append(bMute);
+  if (canLoad) right.append(bLoad);
+  if (full) right.append(bUnload);
+  if (full && o.settings) right.append(bSettings);
+  right.append(bFull);
+  toolbar.append(left, el('div', { class: 'ams-title' }), right, fileInput);
+  toolbar.querySelector('.ams-title').textContent = o.title || '';
+  if (o.toolbar) container.append(toolbar);
+  else container.classList.add('ams-notoolbar');
+
+  const panel = el('div', { class: 'ams-panel', hidden: '' });
+  container.append(panel);
+
+  const statesPanel = el('div', { class: 'ams-panel ams-states', hidden: '' });
+  container.append(statesPanel);
+  let pausedBefore = false;
+
+  function slotTime(t) {
+    const d = new Date(t);
+    const today = new Date().toDateString() === d.toDateString();
+    return today ? 'Today ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+
+  async function buildStates() {
+    const h = app.opts.hotkeys;
+    statesPanel.innerHTML = '';
+    const head = el('div', { class: 'ams-panel-head' }, '<h2>Save and load</h2>');
+    head.append(el('button', { class: 'ams-btn ams-close', type: 'button', 'aria-label': 'Close', onclick: () => toggleStates(false) }, '✕'));
+    const list = el('div', { class: 'ams-slots' });
+    const help = el('p', { class: 'ams-help' });
+    help.textContent = `${h.saveState ? h.saveState + ' saves and ' : ''}${h.loadState ? h.loadState + ' loads ' : ''}` +
+      `${h.saveState || h.loadState ? 'the last slot used. ' : ''}Saves are kept in this browser, separately for each game.`;
+    statesPanel.append(head, list, help);
+    let slots;
+    try {
+      slots = await app.listStates();
+    } catch (e) {
+      list.textContent = String(e.message || e);
+      return;
+    }
+    for (let i = 1; i <= SLOT_COUNT; i++) {
+      const s = slots[i - 1];
+      const card = el('div', { class: 'ams-slot' + (s ? '' : ' empty') + (i === app.quickSlot ? ' quick' : '') });
+      const pic = el('div', { class: 'ams-slot-pic' });
+      if (s && s.thumb) pic.append(el('img', { src: s.thumb, alt: '' }));
+      const info = el('div', { class: 'ams-slot-info' }, '<strong></strong><span></span>');
+      info.firstChild.textContent = `Slot ${i}`;
+      info.lastChild.textContent = s ? slotTime(s.time) : 'Empty';
+      const acts = el('div', { class: 'ams-slot-acts' });
+      acts.append(action('Save', () => app.saveState(i)));
+      if (s) {
+        acts.append(action('Load', async () => { if (await app.loadState(i)) toggleStates(false); }));
+        const del = action('✕', () => { if (confirm(`Delete the save in slot ${i}?`)) app.deleteState(i); });
+        del.title = 'Delete';
+        acts.append(del);
+      }
+      card.append(pic, info, acts);
+      list.append(card);
+    }
+  }
+
+  function toggleStates(show) {
+    const vis = show ?? statesPanel.hidden;
+    if (vis === !statesPanel.hidden) return;
+    if (vis) {
+      toggleSettings(false);
+      pausedBefore = app.paused;
+      app.pause(true);
+      buildStates();
+    } else if (!pausedBefore) {
+      app.pause(false);
+    }
+    statesPanel.hidden = !vis;
+    bStates.classList.toggle('on', vis);
+    app.input.enabled = !vis;
+    if (vis) app.input.releaseAll();
+  }
+
+  function select(label, options, value, onchange) {
+    const row = el('label', { class: 'ams-row' }, `<span></span>`);
+    row.firstChild.textContent = label;
+    const s = el('select');
+    for (const [v, t] of options) {
+      const opt = el('option', { value: v });
+      opt.textContent = t;
+      if (String(v) === String(value)) opt.selected = true;
+      s.append(opt);
+    }
+    s.addEventListener('change', () => onchange(s.value));
+    row.append(s);
+    return row;
+  }
+
+  function check(label, value, onchange) {
+    const row = el('label', { class: 'ams-row ams-check' }, '<span></span>');
+    row.firstChild.textContent = label;
+    const c = el('input', { type: 'checkbox' });
+    c.checked = !!value;
+    c.addEventListener('change', () => onchange(c.checked));
+    row.append(c);
+    return row;
+  }
+
+  function slider(label, key, min, max) {
+    const row = el('label', { class: 'ams-row ams-slider' }, '<span></span>');
+    row.firstChild.textContent = label;
+    const s = el('input', { type: 'range', min, max, step: 25 });
+    s.value = app.renderer.crt[key];
+    const out = el('output');
+    out.textContent = s.value;
+    s.addEventListener('input', () => {
+      out.textContent = s.value;
+      app.setVideo({ crt: { [key]: Number(s.value) } });
+    });
+    row.append(s, out);
+    return row;
+  }
+
+  function filterSlider(label, key) {
+    const [min, max] = FILTER_RANGES[key];
+    const row = el('label', { class: 'ams-row ams-slider' }, '<span></span>');
+    row.firstChild.textContent = label;
+    const s = el('input', { type: 'range', min, max, step: 1 });
+    s.value = app.renderer.filter[key];
+    const out = el('output');
+    out.textContent = s.value;
+    s.addEventListener('input', () => {
+      out.textContent = s.value;
+      app.setVideo({ filter: { [key]: Number(s.value) } });
+    });
+    row.append(s, out);
+    return row;
+  }
+
+  function colour(label, value, onchange) {
+    const row = el('label', { class: 'ams-row' }, '<span></span>');
+    row.firstChild.textContent = label;
+    const c = el('input', { type: 'color', value });
+    c.addEventListener('input', () => onchange(c.value));
+    row.append(c);
+    return row;
+  }
+
+  function joyKeyRow(dir) {
+    const row = el('div', { class: 'ams-row' }, '<span></span>');
+    row.firstChild.textContent = 'Joystick ' + (dir === 'fire2' ? 'fire 2' : dir);
+    const codes = [].concat(app.input.joyKeyConfig[dir] || []);
+    const pair = el('div', { class: 'ams-keypair' });
+    for (const slot of [0, 1]) {
+      const b = el('button', {
+        class: 'ams-action ams-keybind', type: 'button',
+        title: `${slot ? 'Secondary' : 'Primary'} key: click, then press a key`,
+      });
+      b.textContent = codes[slot] ? keyLabel(codes[slot]) : slot ? '+' : 'none';
+      if (slot && codes.length > 2) b.title += `. Also: ${codes.slice(2).map(keyLabel).join(', ')}`;
+      b.addEventListener('click', () => {
+        b.textContent = 'Press a key';
+        const capture = (e) => {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          window.removeEventListener('keydown', capture, true);
+          if (e.code === 'Escape') { buildPanel(); return; }
+          if (e.code === 'Backspace') { app.setJoystickKey(dir, null, slot); buildPanel(); return; }
+          if (Object.values(app.opts.hotkeys).includes(e.code)) {
+            ui.message(`${keyLabel(e.code)} is already a hotkey`, 2000);
+            buildPanel();
+            return;
+          }
+          app.setJoystickKey(dir, e.code, slot);
+          buildPanel();
+        };
+        window.addEventListener('keydown', capture, true);
+      });
+      pair.append(b);
+    }
+    row.append(pair);
+    return row;
+  }
+
+  function section(title, ...rows) {
+    const sec = el('section', { class: 'ams-section' }, '<h3></h3>');
+    sec.firstChild.textContent = title;
+    sec.append(...rows);
+    return sec;
+  }
+
+  function action(label, fn) {
+    return el('button', { class: 'ams-action', type: 'button', onclick: fn }, label);
+  }
+
+  function buildPanel() {
+    panel.innerHTML = '';
+    const head = el('div', { class: 'ams-panel-head' }, '<h2>Settings</h2>');
+    head.append(el('button', { class: 'ams-btn ams-close', type: 'button', 'aria-label': 'Close', onclick: () => toggleSettings(false) }, '✕'));
+    panel.append(head);
+    const r = app.renderer;
+    const ramValue = app.ramOverride ?? app.opts.ram;
+    const m = app.machine;
+    panel.append(
+      section('Machine',
+        select('Model', Object.entries(MODELS).filter(([k]) => app.modelAvailable(k)).map(([k, v]) => [k, v.name]), app.model, (v) => app.setModel(v)),
+        select('Memory', RAM_LABELS, String(ramValue), (v) => app.setRam(v === 'auto' ? 'auto' : Number(v))),
+        check('Auto warp while loading', app.opts.warp.auto, (v) => { app.opts.warp.auto = v; }),
+        check('Stereo sound', app.stereo, (v) => app.setStereo(v)),
+        el('div', { class: 'ams-actions' }),
+      ),
+      section('Display',
+        check('CRT emulation', r.crt.enabled, (v) => app.setVideo({ crt: { enabled: v } })),
+        select('Palette', PALETTE_NAMES.map((n) => [n, PALETTE_LABELS[n] || n]), r.palette, (v) => app.setVideo({ palette: v })),
+        select('Borders', [['normal', 'Normal'], ['full', 'Full'], ['tight', 'Small'], ['none', 'None']], r.border, (v) => app.setVideo({ border: v })),
+        select('Aspect ratio', [['tv', 'TV (non-square pixels)'], ['square', 'Square pixels']], r.aspect, (v) => app.setVideo({ aspect: v })),
+        check('Integer scaling', r.integerScale, (v) => app.setVideo({ integerScale: v })),
+        slider('Blur', 'blur', 0, 1000),
+        slider('Scanline shade', 'scanlineShade', 0, 1000),
+        slider('Saturation', 'saturation', 0, 2000),
+        slider('Contrast', 'contrast', 0, 2000),
+        slider('Brightness', 'brightness', 0, 2000),
+        slider('Gamma', 'gamma', 0, 4000),
+        slider('Tint', 'tint', 0, 2000),
+        slider('PAL odd line phase', 'oddLinesPhase', 0, 2000),
+        slider('PAL odd line offset', 'oddLinesOffset', 0, 2000),
+      ),
+      section('CRT filter',
+        check('Draw the CRT filter', r.filter.enabled, (v) => app.setVideo({ filter: { enabled: v } })),
+        filterSlider('Pattern scale', 'scale'),
+        filterSlider('Scan lines: every n lines', 'everyNLines'),
+        filterSlider('Lines darkened', 'linesDarkened'),
+        filterSlider('Darkness (%)', 'darkness'),
+        select('Direction', [['rows', 'Rows'], ['columns', 'Columns']], r.filter.direction, (v) => app.setVideo({ filter: { direction: v } })),
+        filterSlider('Bulge (%)', 'bulge'),
+        filterSlider('Rounded corners (%)', 'corners'),
+        filterSlider('Corner dot', 'cornerDot'),
+        filterSlider('Bleed (%)', 'bleed'),
+        filterSlider('Glow (%)', 'glow'),
+        filterSlider('Mask (%)', 'mask'),
+        select('Mask shape', MASK_SHAPES.map((m) => [m, { stripes: 'Stripes', 'stripes-gaps': 'Stripes with gaps', slots: 'Slots', dots: 'Dots' }[m]]),
+          r.filter.maskShape, (v) => app.setVideo({ filter: { maskShape: v } })),
+        filterSlider('Stripe width', 'maskWidth'),
+        colour('Tint colour', r.filter.tintColor, (v) => app.setVideo({ filter: { tintColor: v } })),
+        filterSlider('Tint (%)', 'tint'),
+        filterSlider('Roll per frame', 'roll'),
+        filterSlider('Rolling bar (%)', 'rollingBar'),
+      ),
+      section('Input',
+        check('Keyboard joystick (F9)', app.input.joyKeysEnabled, (v) => app.setJoystickKeys(v)),
+        ...['up', 'down', 'left', 'right', 'fire', 'fire2'].map((dir) => joyKeyRow(dir)),
+        el('div', { class: 'ams-actions ams-joyreset' }),
+        select('Keyboard mapping', [['symbolic', 'Symbolic (type what you see)'], ['positional', 'Positional']],
+          app.input.keyboardMap, (v) => app.setKeyboardMap(v)),
+        el('p', { class: 'ams-help' },
+          'Joystick keys: a primary and a secondary key each. Click one, then press a key (Backspace clears, Esc cancels). ' +
+          'CPC keys: Esc = ESC, Alt or End = COPY, Delete = CLR, numeric keypad = f0–f9 and f., F1–F8 = f1–f8. ' +
+          'Gamepads work automatically. Paste text to type it into BASIC.'),
+      ),
+      section('Media', el('div', { class: 'ams-actions ams-media' })),
+    );
+    panel.querySelector('.ams-joyreset').append(action('Default joystick keys', () => { app.resetJoystickKeys(); buildPanel(); }));
+    const acts = panel.querySelector('.ams-actions');
+    acts.append(action('Restart program', () => app.reset()), action('Reset to BASIC', () => app.resetToBasic()));
+    const media = panel.querySelector('.ams-media');
+    if (m && m.tape.present) {
+      media.append(
+        action('Tape: Play', () => m.tape.play()),
+        action('Tape: Stop', () => m.tape.stop()),
+        action('Tape: Rewind', () => m.tape.rewind()),
+      );
+    }
+    if (m && m.disks[0]) {
+      media.append(action('Download disk image', () => download(app.diskImage(), (app.mediaNames && app.mediaNames.disk) || 'disk.dsk')));
+    }
+    if (o.allowFileDrop) media.append(action('Load file…', pickFile));
+    media.append(action('Unload (start in BASIC)', () => app.unload()));
+  }
+
+  function download(bytes, name) {
+    if (!bytes) return;
+    const a = el('a', { href: URL.createObjectURL(new Blob([bytes])), download: name });
+    document.body.append(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  function toggleSettings(show) {
+    const vis = show ?? panel.hidden;
+    if (vis) { toggleStates(false); buildPanel(); }
+    panel.hidden = !vis;
+    app.input.enabled = !vis;
+    if (vis) app.input.releaseAll();
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (container.requestFullscreen) container.requestFullscreen().catch(() => {});
+    else if (container.webkitRequestFullscreen) container.webkitRequestFullscreen();
+  }
+
+  const touchWanted = o.touchControls === true ||
+    (o.touchControls === 'auto' && window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  let touch = null;
+  if (touchWanted) {
+    touch = el('div', { class: 'ams-touch' });
+    const stick = el('div', { class: 'ams-stick' }, '<div class="ams-knob"></div>');
+    const fire = el('div', { class: 'ams-fire' }, 'FIRE');
+    const keys = el('div', { class: 'ams-touch-keys' });
+    for (const spec of o.touchKeys || []) {
+      const t = touchKey(spec);
+      if (!t) continue;
+      const b = el('button', { type: 'button', class: 'ams-key' });
+      b.textContent = t.label;
+      let held = false;
+      const down = (e) => {
+        e.preventDefault();
+        app.start();
+        if (held) return;
+        held = true;
+        for (const k of t.keys) app.machine.key(k, true);
+      };
+      const up = (e) => {
+        e.preventDefault();
+        if (!held) return;
+        held = false;
+        for (const k of t.keys) app.machine.key(k, false);
+      };
+      b.addEventListener('pointerdown', down);
+      b.addEventListener('pointerup', up);
+      b.addEventListener('pointercancel', up);
+      b.addEventListener('pointerleave', up);
+      keys.append(b);
+    }
+    touch.append(keys, stick, fire);
+    container.append(touch);
+
+    let stickBits = 0, fireBits = 0, stickId = null;
+    const knob = stick.firstChild;
+    const updateStick = (e) => {
+      const r = stick.getBoundingClientRect();
+      const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+      const max = r.width / 2;
+      const len = Math.min(1, Math.hypot(dx, dy) / max);
+      const ang = Math.atan2(dy, dx);
+      knob.style.transform = `translate(${Math.cos(ang) * len * max * 0.6}px, ${Math.sin(ang) * len * max * 0.6}px)`;
+      stickBits = 0;
+      if (len > 0.3) {
+        const oct = Math.round(ang / (Math.PI / 4)) & 7;
+        stickBits = [JOY.RIGHT, JOY.RIGHT | JOY.DOWN, JOY.DOWN, JOY.DOWN | JOY.LEFT,
+          JOY.LEFT, JOY.LEFT | JOY.UP, JOY.UP, JOY.UP | JOY.RIGHT][oct];
+      }
+      app.input.setTouchJoy(stickBits | fireBits);
+    };
+    stick.addEventListener('pointerdown', (e) => { e.preventDefault(); app.start(); stickId = e.pointerId; stick.setPointerCapture(e.pointerId); updateStick(e); });
+    stick.addEventListener('pointermove', (e) => { if (e.pointerId === stickId) updateStick(e); });
+    const stickUp = (e) => {
+      if (e.pointerId !== stickId) return;
+      stickId = null; stickBits = 0; knob.style.transform = '';
+      app.input.setTouchJoy(fireBits);
+    };
+    stick.addEventListener('pointerup', stickUp);
+    stick.addEventListener('pointercancel', stickUp);
+    const fireDown = (e) => { e.preventDefault(); app.start(); fireBits = JOY.FIRE; fire.classList.add('on'); app.input.setTouchJoy(stickBits | fireBits); };
+    const fireUp = (e) => { e.preventDefault(); fireBits = 0; fire.classList.remove('on'); app.input.setTouchJoy(stickBits); };
+    fire.addEventListener('pointerdown', fireDown);
+    fire.addEventListener('pointerup', fireUp);
+    fire.addEventListener('pointercancel', fireUp);
+  }
+
+  let toastTimer = 0;
+  const ui = {
+    canvas,
+    message(text, ms = 2000) {
+      toast.textContent = text;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      if (ms) toastTimer = setTimeout(() => toast.classList.remove('show'), ms);
+    },
+    showStart() {
+      start.hidden = false;
+      const hint = start.querySelector('.ams-start-hint');
+      hint.textContent = app.input.joyKeysEnabled
+        ? `Joystick: cursor keys, fire = ${[].concat(app.input.joyKeyConfig.fire || []).map(keyLabel)[0] || 'none'}. F9 toggles keyboard joystick.`
+        : 'F9 switches the cursor keys to joystick.';
+    },
+    hideStart() { start.hidden = true; toast.classList.remove('show'); canvas.focus({ preventScroll: true }); },
+    toggleFullscreen,
+    resize() {
+      const r = screen.getBoundingClientRect();
+      app.renderer.alignTop = touchWanted && r.height > r.width;
+      app.renderer.resize(r.width, r.height, window.devicePixelRatio || 1);
+    },
+    update() {
+      bJoy.classList.toggle('on', app.input.joyKeysEnabled);
+      joyTag.classList.toggle('on', app.input.joyKeysEnabled);
+      bWarp.classList.toggle('on', app.warp);
+      bCrt.classList.toggle('on', app.renderer.crt.enabled || app.renderer.filter.enabled);
+      bMute.innerHTML = icon(app.audio.muted ? 'mute' : 'sound');
+      bPause.innerHTML = icon(app.paused ? 'play' : 'pause');
+      bPause.title = app.paused ? 'Resume' : 'Pause';
+    },
+    refreshPanel() {
+      if (!panel.hidden) buildPanel();
+    },
+    refreshStates() {
+      if (!statesPanel.hidden) buildStates();
+    },
+    tick(warping) {
+      const m = app.machine;
+      led.classList.toggle('on', !!(m.fdc && m.fdc.led));
+      led.hidden = !(m.fdc && m.disks[0]);
+      tape.hidden = !m.tape.present;
+      tape.classList.toggle('on', m.tape.running);
+      warp.classList.toggle('on', !!warping);
+    },
+    attachInput() {
+      const begin = () => app.start();
+      start.addEventListener('click', begin);
+      window.addEventListener('keydown', (e) => {
+        if (!app.started && !start.hidden) begin();
+        if (e.code === 'Escape' && !statesPanel.hidden) toggleStates(false);
+      });
+      screen.addEventListener('pointerdown', () => { app.start(); canvas.focus({ preventScroll: true }); });
+      window.addEventListener('paste', (e) => {
+        if (!panel.hidden) return;
+        const text = (e.clipboardData || window.clipboardData).getData('text');
+        if (text) { e.preventDefault(); app.typeText(text.replace(/\r\n?/g, '\r').replace(/\n/g, '\r')); }
+      });
+      fileInput.addEventListener('change', () => {
+        if (fileInput.files[0]) app.loadFile(fileInput.files[0], { run: loadAndRun }).catch((e) => ui.message(String(e.message || e), 5000));
+        fileInput.value = '';
+      });
+      if (canLoad) {
+        let depth = 0;
+        container.addEventListener('dragenter', (e) => { e.preventDefault(); depth++; drop.hidden = false; });
+        container.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; drop.hidden = true; } });
+        container.addEventListener('dragover', (e) => e.preventDefault());
+        container.addEventListener('drop', (e) => {
+          e.preventDefault();
+          depth = 0;
+          drop.hidden = true;
+          const f = e.dataTransfer.files[0];
+          if (f) app.loadFile(f, { run: !e.shiftKey }).catch((err) => ui.message(String(err.message || err), 5000));
+        });
+      }
+      if (window.ResizeObserver) new ResizeObserver(() => ui.resize()).observe(screen);
+      window.addEventListener('resize', () => ui.resize());
+      document.addEventListener('fullscreenchange', () => ui.resize());
+    },
+  };
+  return ui;
+}

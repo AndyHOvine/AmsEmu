@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AmsEmu Amstrad CPC</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/amsemu.css">
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0b0c; }
+    #amsemu { position: fixed; inset: 0; }
+    noscript { color: #ddd; font: 16px system-ui, sans-serif; display: block; padding: 2em; }
+  </style>
+</head>
+<body>
+  <div id="amsemu"></div>
+  <noscript>This Amstrad CPC emulator needs JavaScript.</noscript>
+  <script type="module">
+    import { AmsEmu } from './js/amsemu.js';
+    import config from './config.js';
+
+    AmsEmu.create(document.getElementById('amsemu'), config).then((cpc) => {
+      window.amsemu = cpc;
+    }).catch((e) => {
+      console.error(e);
+      document.getElementById('amsemu').textContent = 'Failed to start: ' + (e.message || e);
+    });
+  </script>
+</body>
+</html>
