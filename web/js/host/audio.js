@@ -8,6 +8,10 @@ export class Audio {
     this.muted = false;
     this.sampleRate = 48000;
     this.ready = false;
+    // Samples made before the sound card has begun to play (see push)
+    this.held = null;
+    // The sound kept waiting to be played, in seconds: the main loop's trim aims for it
+    this.ahead = 0.06;
   }
 
   async start() {
@@ -42,12 +46,27 @@ export class Audio {
   setVolume(v) { this.volume = Math.max(0, Math.min(1, v)); this.applyVolume(); }
   setMuted(m) { this.muted = !!m; this.applyVolume(); }
 
+  // resume() resolves before the sound card has started: it can take half a second more,
+  // and everything pushed meanwhile would be played first, late, with the rate trim taking
+  // a minute to catch up. Until the context's clock moves, keep only the last `ahead`
+  // seconds of samples, and send them when it does.
   push(samples) {
     if (!this.ready || samples.length === 0) return;
+    if (this.ctx.currentTime === 0) {
+      const keep = Math.round(this.sampleRate * this.ahead) * 2;
+      const held = this.held;
+      const all = new Float32Array((held ? held.length : 0) + samples.length);
+      if (held) all.set(held);
+      all.set(samples, all.length - samples.length);
+      this.held = all.length > keep ? all.slice(all.length - keep) : all;
+      return;
+    }
+    if (this.held) { this.node.port.postMessage(this.held); this.held = null; }
     this.node.port.postMessage(samples.slice());
   }
 
   clear() {
+    this.held = null;
     if (this.ready) this.node.port.postMessage('clear');
     this.level = 0;
   }

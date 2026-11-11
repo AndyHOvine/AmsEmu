@@ -8,6 +8,10 @@ class AmsAudio extends AudioWorkletProcessor {
     this.lastL = 0;
     this.lastR = 0;
     this.frames = 0;
+    // More than `most` frames waiting (after the page stalled and the main loop caught up)
+    // drops the oldest down to `keep`, so the sound is never long behind the picture.
+    this.most = Math.round(sampleRate * 0.2);
+    this.keep = Math.round(sampleRate * 0.06);
     this.port.onmessage = (e) => {
       const d = e.data;
       if (d === 'clear') { this.read = this.write = this.count = 0; return; }
@@ -17,6 +21,11 @@ class AmsAudio extends AudioWorkletProcessor {
         buf[this.write] = d[i];
         this.write = (this.write + 1) % size;
         this.count++;
+      }
+      if (this.count >> 1 > this.most) {
+        const drop = this.count - this.keep * 2;
+        this.read = (this.read + drop) % size;
+        this.count -= drop;
       }
     };
   }
